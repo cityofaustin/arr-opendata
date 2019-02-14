@@ -9,51 +9,23 @@ import datetime
 from emailing import *
 import pandas as pd
 
-# authenticate google cloud API credentials
 scope = ['https://spreadsheets.google.com/feeds']
 DIRNAME = os.path.dirname(__file__)
 credentials = ServiceAccountCredentials.from_json_keyfile_name(os.path.join(DIRNAME, 'credentials.json'), scope)
 
-# google docid and socrata asset publisher endpoint
-docid = os.environ['organics_docid']
-socrata_asset = 'https://data.austintexas.gov/resource/vpcu-8r94.json'
-
-
-# headers for the socrata request. App token is system environmental variable
+docid = '1jMTKQcsE8SmvwAfQMFtwCsr1ucDY6FJMr3wlKgD0Eio'
+socrata_asset = 'https://data.austintexas.gov/resource/uic2-id33.json'
 headers = {'Host': 'data.austintexas.gov',
             'Accept': """*/*""",
+            'Authorization': '({}, {})'.format(os.environ['socrata_user'], os.environ['socrata_pass']),
             'Content-Length': '6000',
             'Content-Type': 'application/json',
             'X-App-Token': os.environ['socrata_app_token']}
 
-# Columns to drop from the google sheet download
-drops = ['Associated Food Permit #',
-                 'Property Tax ID',
-                 'Alt Address (Customer Provided)',
-                 'Biz City',
-                 'Biz State',
-                 'Actual Sq. Ftg.',
-                 'OWNER MAILING CITY',
-                 'OWNER MAILING STATE',
-                 'OWNER MAILING ZIP',
-                 'EMAIL ADDRESS (Food Permit)',
-                 '2016 Food Permit',
-                 'CBD?',
-                 'Contact Name',
-                 'Contact Position',
-                 'Contact Address',
-                 'Contact City',
-                 'Contact State',
-                 'Contact Zip',
-                 'Contact Phone',
-                 'Contact Email',
-                 'Other Contact Info',
-                 'ZWS Notes',
-                 'ARR Notes',
-                 '2017 ODP Contact Name',
-                 '2017 ODP Contact Phone',
-                 '2017 ODP Contact Email',
-                 'Property RSN (DO NOT TOUCH)']
+schema_list = ['Property ID', 'Building Area (sqft)', 'Type I', 'Type II', 'UNITS (RP)',
+                  'Year First Affected ; (Oct. 1, 201X)', 'Property Name', 'Street Address (TCAD) DO NOT EDIT',
+                  'Situs Zip', 'Owner Name', 'Owner Address', 'Owner Address Line 2', 'Owner Address Line 3',
+                  'Owner City', 'Owner State', 'Owner Zip+4']
 
 
 def synchronize_gsheet():
@@ -72,34 +44,24 @@ def synchronize_gsheet():
                 writer.writerows(worksheet.get_all_values())
             # convert to spreadsheet pandas dataframe
             df = pd.read_csv(filename)
-            # rename columns
-            df.rename(index=str, columns={'Food Permit #': 'PERMIT NUMBER (FP)',
-                                          'Reported Sq. Ftg.': 'Reported SQ FT (PERMIT)',
-                                          'Business Name': 'PROPERTY NAME',
-                                          'Biz Address': 'Physical ADDRESS',
-                                          'Biz Zip': 'Physical ZIP',
-                                          'OWNER MAILING ADDRESS': 'OWNER ADDRESS',
-                                          'First Year Affected; (Oct. 1, 201X)': 'YEAR AFFECTED'}, inplace=True)
-            # add string 'FP' to the permit number values
-            df['PERMIT NUMBER (FP)'] = df['PERMIT NUMBER (FP)'].astype(str) + ' FP'
-            # drop columns
-            for d in drops:
-                try:
-                    df.drop(d, axis=1, inplace=True)
-                except KeyError as e:
-                    continue
-            # gettin' janky, renaming again for some reason. Do as I say not as I do.
-            df.columns = ['PERMIT NUMBER (FP)', 'PROPERTY NAME', 'Physical ADDRESS', 'Physical ZIP',
-                          'Reported SQ FT (PERMIT)', 'YEAR AFFECTED', 'OWNER NAME', 'OWNER ADDRESS',
-                          'ODP STATUS', 'Establisment Type']
-    # last three rows of this sheet are not valuable
-    df = df[:-3]
+
+    columns = list(df)
+    for c in columns:
+        if c not in schema_list and c[:15] != 'FY19 ADP Status':
+            df.drop(c, axis=1, inplace=True)
+        else:
+            continue
+
+    df.columns = ['Property ID', 'Building Area (sqft)', 'Type I', 'Type II', 'UNITS (RP)',
+                  'Year First Affected ; (Oct. 1, 201X)', 'Property Name', 'Street Address (TCAD) DO NOT EDIT',
+                  'Situs Zip', 'Owner Name', 'Owner Address', 'Owner Address Line 2', 'Owner Address Line 3',
+                  'Owner City', 'Owner State', 'Owner Zip+4', 'FY19 ADP Status']
     # fill NaN (not a number) in dataframe with ''
     df.fillna('', inplace=True)
     # convert to dictionary for requests payload
     data = df.to_dict('records')
     # save to csv for initial manual upload of data to socrata. Manually uploading to set columns/schema of asset
-    df.to_csv('master-list.csv')
+    df.to_csv('master-recycling-list.csv')
 
     # perform replace using a put request. Authentication is socrata username and password with ownership of asset in question
     r = requests.put(socrata_asset, json=data, auth=(os.environ['socrata_user'], os.environ['socrata_pass']), headers=headers)
@@ -109,7 +71,8 @@ def synchronize_gsheet():
 def notify_complete(timer, response):
     """Sends email notification to confirm sheet has been synchronized."""
     sender = 'ARR_Automation@austintexas.gov'
-    receiver = ['Thomas.Montgomery@austintexas.gov']
+    receiver = ['Thomas.Montgomery@austintexas.gov', 'Nathan.Shaw-Meadow@austintexas.gov']
+    # receiver = ['Thomas.Montgomery@austintexas.gov']
     now = datetime.datetime.now()
     time = str((now - timer))
     body = ("""This message was sent to confirm that the socrata asset:
@@ -126,7 +89,7 @@ def notify_complete(timer, response):
     msg['To'] = ', '.join(receiver)
     msg['Subject'] = 'Open Data Synchronization'
 
-    s = smtplib.SMTP(os.environ['coa_mail_server'])
+    s = smtplib.SMTP('coamroute.austintexas.gov')
 
     s.sendmail(sender, receiver, msg.as_string())
     s.quit()
